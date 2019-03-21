@@ -119,7 +119,6 @@ func (b *Work) Init() {
 	b.initOnce.Do(func() {
 		b.results = make(chan *result, min(b.C*1000, maxResult))
 		b.stopCh = make(chan struct{}, b.C)
-		b.initClient()
 	})
 }
 
@@ -133,6 +132,7 @@ func (b *Work) Run() {
 	go func() {
 		runReporter(b.report)
 	}()
+	b.initClient()
 	b.runWorkers()
 	b.Finish()
 }
@@ -188,6 +188,7 @@ func (b *Work) makeRequest() {
 	var dnsStart, connStart, resStart, reqStart, delayStart time.Duration
 	var dnsDuration, connDuration, resDuration, reqDuration, delayDuration time.Duration
 	var err error
+	err = nil
 
 	if b.Fast {
 		// TODO trace
@@ -234,8 +235,8 @@ func (b *Work) makeRequest() {
 		}
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 
-		resp, err := b.client.Do(req)
-
+		var resp *http.Response
+		resp, err = b.client.Do(req)
 		if err == nil {
 			size = resp.ContentLength
 			code = resp.StatusCode

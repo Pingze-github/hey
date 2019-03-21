@@ -4,6 +4,10 @@
 
 ------
 
+TODO:
++ fasthttp支持time trace
++ fasthttp支持redirect
+
 **An Enhanced Version of [rakyll/hey](https://github.com/rakyll/hey).**
 
 Adds an option `-fast` to use [valyala/fasthttp](https://github.com/valyala/fasthttp) instead of [golang/net/http](https://github.com/golang/net).
