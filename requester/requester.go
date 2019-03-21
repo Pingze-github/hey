@@ -27,6 +27,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttpproxy"
 	"golang.org/x/net/http2"
 )
 
@@ -51,6 +53,9 @@ type Work struct {
 	// Request is the request to be made.
 	Request *http.Request
 
+	// Request when using fasthttp
+	RequestFast *fasthttp.Request
+
 	RequestBody []byte
 
 	// N is the total number of requests to make.
@@ -58,6 +63,9 @@ type Work struct {
 
 	// C is the concurrency level, the number of concurrent workers to run.
 	C int
+
+	// Fast is an option to using fasthttp in place of net/http
+	Fast bool
 
 	// H2 is an option to make HTTP/2 requests
 	H2 bool
@@ -140,46 +148,69 @@ func (b *Work) Finish() {
 	b.report.finalize(total)
 }
 
-func (b *Work) makeRequest(c *http.Client) {
+func (b *Work) makeRequest(c *http.Client, cfast *fasthttp.Client) {
 	s := now()
 	var size int64
 	var code int
 	var dnsStart, connStart, resStart, reqStart, delayStart time.Duration
 	var dnsDuration, connDuration, resDuration, reqDuration, delayDuration time.Duration
-	req := cloneRequest(b.Request, b.RequestBody)
-	trace := &httptrace.ClientTrace{
-		DNSStart: func(info httptrace.DNSStartInfo) {
-			dnsStart = now()
-		},
-		DNSDone: func(dnsInfo httptrace.DNSDoneInfo) {
-			dnsDuration = now() - dnsStart
-		},
-		GetConn: func(h string) {
-			connStart = now()
-		},
-		GotConn: func(connInfo httptrace.GotConnInfo) {
-			if !connInfo.Reused {
-				connDuration = now() - connStart
-			}
-			reqStart = now()
-		},
-		WroteRequest: func(w httptrace.WroteRequestInfo) {
-			reqDuration = now() - reqStart
-			delayStart = now()
-		},
-		GotFirstResponseByte: func() {
-			delayDuration = now() - delayStart
-			resStart = now()
-		},
+	var err error
+
+	if b.Fast {
+		// TODO trace
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		b.RequestFast.CopyTo(req)
+		req.BodyWriter().Write(b.RequestBody)
+
+		err = cfast.Do(req, resp)
+		if err == nil {
+			code = resp.StatusCode()
+			size = int64(resp.Header.ContentLength())
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+	} else {
+		req := cloneRequest(b.Request, b.RequestBody)
+		trace := &httptrace.ClientTrace{
+			DNSStart: func(info httptrace.DNSStartInfo) {
+				dnsStart = now()
+			},
+			DNSDone: func(dnsInfo httptrace.DNSDoneInfo) {
+				dnsDuration = now() - dnsStart
+			},
+			GetConn: func(h string) {
+				connStart = now()
+			},
+			GotConn: func(connInfo httptrace.GotConnInfo) {
+				if !connInfo.Reused {
+					connDuration = now() - connStart
+				}
+				reqStart = now()
+			},
+			WroteRequest: func(w httptrace.WroteRequestInfo) {
+				reqDuration = now() - reqStart
+				delayStart = now()
+			},
+			GotFirstResponseByte: func() {
+				delayDuration = now() - delayStart
+				resStart = now()
+			},
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+
+		resp, err := c.Do(req)
+
+		if err == nil {
+			size = resp.ContentLength
+			code = resp.StatusCode
+			io.Copy(ioutil.Discard, resp.Body)
+			resp.Body.Close()
+		}
 	}
-	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
-	resp, err := c.Do(req)
-	if err == nil {
-		size = resp.ContentLength
-		code = resp.StatusCode
-		io.Copy(ioutil.Discard, resp.Body)
-		resp.Body.Close()
-	}
+
 	t := now()
 	resDuration = t - resStart
 	finish := t - s
@@ -197,7 +228,7 @@ func (b *Work) makeRequest(c *http.Client) {
 	}
 }
 
-func (b *Work) runWorker(client *http.Client, n int) {
+func (b *Work) runWorker(client *http.Client, clientFast *fasthttp.Client, n int) {
 	var throttle <-chan time.Time
 	if b.QPS > 0 {
 		throttle = time.Tick(time.Duration(1e6/(b.QPS)) * time.Microsecond)
@@ -217,7 +248,7 @@ func (b *Work) runWorker(client *http.Client, n int) {
 			if b.QPS > 0 {
 				<-throttle
 			}
-			b.makeRequest(client)
+			b.makeRequest(client, clientFast)
 		}
 	}
 }
@@ -226,27 +257,46 @@ func (b *Work) runWorkers() {
 	var wg sync.WaitGroup
 	wg.Add(b.C)
 
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-			ServerName:         b.Request.Host,
-		},
-		MaxIdleConnsPerHost: min(b.C, maxIdleConn),
-		DisableCompression:  b.DisableCompression,
-		DisableKeepAlives:   b.DisableKeepAlives,
-		Proxy:               http.ProxyURL(b.ProxyAddr),
-	}
-	if b.H2 {
-		http2.ConfigureTransport(tr)
+	timeout := time.Duration(b.Timeout) * time.Second
+
+	var client *http.Client
+	var clientFast *fasthttp.Client
+	if b.Fast {
+		// TODO Implement options: Compression/keepalive
+		clientFast = &fasthttp.Client{
+			ReadTimeout: timeout,
+			TLSConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         b.Request.Host,
+			},
+			MaxConnsPerHost: b.C,
+		}
+		if b.ProxyAddr != nil {
+			clientFast.Dial = fasthttpproxy.FasthttpSocksDialer(b.ProxyAddr.EscapedPath())
+		}
 	} else {
-		tr.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         b.Request.Host,
+			},
+			MaxIdleConnsPerHost: min(b.C, maxIdleConn),
+			DisableCompression:  b.DisableCompression,
+			DisableKeepAlives:   b.DisableKeepAlives,
+			Proxy:               http.ProxyURL(b.ProxyAddr),
+		}
+		if b.H2 {
+			http2.ConfigureTransport(tr)
+		} else {
+			tr.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
+		}
+		client = &http.Client{Transport: tr, Timeout: timeout}
 	}
-	client := &http.Client{Transport: tr, Timeout: time.Duration(b.Timeout) * time.Second}
 
 	// Ignore the case where b.N % b.C != 0.
 	for i := 0; i < b.C; i++ {
 		go func() {
-			b.runWorker(client, b.N/b.C)
+			b.runWorker(client, clientFast, b.N/b.C)
 			wg.Done()
 		}()
 	}

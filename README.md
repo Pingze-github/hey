@@ -2,6 +2,16 @@
 
 [![Build Status](https://travis-ci.org/rakyll/hey.svg?branch=master)](https://travis-ci.org/rakyll/hey)
 
+------
+
+**An Enhanced Version of [rakyll/hey](https://github.com/rakyll/hey).**
+
+Adds an option `-fast` to use [valyala/fasthttp](https://github.com/valyala/fasthttp) instead of [golang/net/http](https://github.com/golang/net).
+
+Provides shorter return time, higher concurrency, and lower memory footprint.
+
+------
+
 hey is a tiny program that sends some load to a web application.
 
 hey was originally called boom and was influenced from Tarek Ziade's

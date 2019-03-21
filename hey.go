@@ -16,6 +16,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -29,7 +30,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rakyll/hey/requester"
+	"hey/requester"
+
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -57,6 +60,7 @@ var (
 	z = flag.Duration("z", 0, "")
 
 	h2   = flag.Bool("h2", false, "")
+	fast = flag.Bool("fast", false, "")
 	cpus = flag.Int("cpus", runtime.GOMAXPROCS(-1), "")
 
 	disableCompression = flag.Bool("disable-compression", false, "")
@@ -89,7 +93,10 @@ Options:
   -T  Content-type, defaults to "text/html".
   -a  Basic authentication, username:password.
   -x  HTTP Proxy address as host:port.
-  -h2 Enable HTTP/2.
+	-h2 Enable HTTP/2. -fast is ignored.
+	
+  -fast Enable fasthttp instead of net/http. Better performance under high concurrency.
+      Not support HTTP/2. Not support redirects. Not support compression or keepalive control.
 
   -host	HTTP Host header.
 
@@ -212,8 +219,37 @@ func main() {
 	header.Set("User-Agent", ua)
 	req.Header = header
 
+	// Define fasthttp.Request
+	reqFast := &fasthttp.Request{}
+	reqFast.SetRequestURI(url)
+	reqFast.Header.SetMethod(method)
+
+	reqFast.Header.Set("Content-Type", *contentType)
+	for _, h := range hs {
+		match, err := parseInputWithRegexp(h, headerRegexp)
+		if err != nil {
+			usageAndExit(err.Error())
+		}
+		header.Set(match[1], match[2])
+	}
+	if *accept != "" {
+		header.Set("Accept", *accept)
+	}
+	reqFast.Header.Set("User-Agent", ua)
+
+	if username != "" || password != "" {
+		auth := username + ":" + password
+		reqFast.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(auth)))
+	}
+
+	// If H2 choosed, auto set fast=false
+	if *h2 {
+		*fast = false
+	}
+
 	w := &requester.Work{
 		Request:            req,
+		RequestFast:        reqFast,
 		RequestBody:        bodyAll,
 		N:                  num,
 		C:                  conc,
@@ -222,6 +258,7 @@ func main() {
 		DisableCompression: *disableCompression,
 		DisableKeepAlives:  *disableKeepAlives,
 		DisableRedirects:   *disableRedirects,
+		Fast:               *fast,
 		H2:                 *h2,
 		ProxyAddr:          proxyURL,
 		Output:             *output,
