@@ -10,6 +10,8 @@ Adds an option `-fast` to use [valyala/fasthttp](https://github.com/valyala/fast
 
 Provides shorter return time, higher concurrency, and lower memory footprint.
 
+Install with `go get -u github.com/Pingze-github/hey`.
+
 ------
 
 hey is a tiny program that sends some load to a web application.

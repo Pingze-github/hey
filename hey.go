@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	"hey/requester"
+	"github.com/Pingze-github/hey/requester"
 
 	"github.com/valyala/fasthttp"
 )
