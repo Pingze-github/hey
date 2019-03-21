@@ -81,6 +81,9 @@ func TestRequest(t *testing.T) {
 		some = r.Header.Get("X-some")
 		auth = r.Header.Get("Authorization")
 	}
+
+	_ = method
+
 	server := httptest.NewServer(http.HandlerFunc(handler))
 	defer server.Close()
 

@@ -12,6 +12,19 @@ Provides shorter return time, higher concurrency, and lower memory footprint.
 
 Install with `go get -u github.com/Pingze-github/hey`.
 
+Benchmark:
+``` 
+goos: windows
+goarch: amd64
+pkg: github.com/Pingze-github/hey
+BenchmarkRunNetHTTP-4                      20000             86766 ns/op            5811 B/op         79 allocs/op
+BenchmarkRunFastHTTP-4                     30000             54656 ns/op            1419 B/op         14 allocs/op
+BenchmarkRunParallelNetHTTP-4              50000             25200 ns/op            5804 B/op         78 allocs/op
+BenchmarkRunParallelFastHTTP-4            100000             18641 ns/op            1412 B/op         14 allocs/op
+BenchmarkRunParallelNetHTTP128-4           30000             52020 ns/op            8259 B/op         92 allocs/op
+BenchmarkRunParallelFastHTTP128-4         100000             17802 ns/op            1538 B/op         14 allocs/op
+```
+
 ------
 
 hey is a tiny program that sends some load to a web application.

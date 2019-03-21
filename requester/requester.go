@@ -102,6 +102,9 @@ type Work struct {
 	start    time.Duration
 
 	report *report
+
+	client     *http.Client
+	clientFast *fasthttp.Client
 }
 
 func (b *Work) writer() io.Writer {
@@ -116,6 +119,7 @@ func (b *Work) Init() {
 	b.initOnce.Do(func() {
 		b.results = make(chan *result, min(b.C*1000, maxResult))
 		b.stopCh = make(chan struct{}, b.C)
+		b.initClient()
 	})
 }
 
@@ -148,7 +152,36 @@ func (b *Work) Finish() {
 	b.report.finalize(total)
 }
 
-func (b *Work) makeRequest(c *http.Client, cfast *fasthttp.Client) {
+func (b *Work) MakeRequestOnly() {
+	if b.Fast {
+		// TODO trace
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		b.RequestFast.CopyTo(req)
+		req.BodyWriter().Write(b.RequestBody)
+
+		err := b.clientFast.Do(req, resp)
+		if err != nil {
+			panic(err)
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+	} else {
+		req := cloneRequest(b.Request, b.RequestBody)
+
+		resp, err := b.client.Do(req)
+		if err != nil {
+			panic(err)
+		}
+
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
+
+func (b *Work) makeRequest() {
 	s := now()
 	var size int64
 	var code int
@@ -164,7 +197,7 @@ func (b *Work) makeRequest(c *http.Client, cfast *fasthttp.Client) {
 		b.RequestFast.CopyTo(req)
 		req.BodyWriter().Write(b.RequestBody)
 
-		err = cfast.Do(req, resp)
+		err = b.clientFast.Do(req, resp)
 		if err == nil {
 			code = resp.StatusCode()
 			size = int64(resp.Header.ContentLength())
@@ -201,7 +234,7 @@ func (b *Work) makeRequest(c *http.Client, cfast *fasthttp.Client) {
 		}
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 
-		resp, err := c.Do(req)
+		resp, err := b.client.Do(req)
 
 		if err == nil {
 			size = resp.ContentLength
@@ -228,14 +261,14 @@ func (b *Work) makeRequest(c *http.Client, cfast *fasthttp.Client) {
 	}
 }
 
-func (b *Work) runWorker(client *http.Client, clientFast *fasthttp.Client, n int) {
+func (b *Work) runWorker(n int) {
 	var throttle <-chan time.Time
 	if b.QPS > 0 {
 		throttle = time.Tick(time.Duration(1e6/(b.QPS)) * time.Microsecond)
 	}
 
 	if b.DisableRedirects {
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		b.client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
 	}
@@ -248,7 +281,7 @@ func (b *Work) runWorker(client *http.Client, clientFast *fasthttp.Client, n int
 			if b.QPS > 0 {
 				<-throttle
 			}
-			b.makeRequest(client, clientFast)
+			b.makeRequest()
 		}
 	}
 }
@@ -257,13 +290,23 @@ func (b *Work) runWorkers() {
 	var wg sync.WaitGroup
 	wg.Add(b.C)
 
+	// Ignore the case where b.N % b.C != 0.
+	for i := 0; i < b.C; i++ {
+		go func() {
+			b.runWorker(b.N / b.C)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+}
+
+// initClient initialize the clients
+func (b *Work) initClient() {
 	timeout := time.Duration(b.Timeout) * time.Second
 
-	var client *http.Client
-	var clientFast *fasthttp.Client
 	if b.Fast {
 		// TODO Implement options: Compression/keepalive
-		clientFast = &fasthttp.Client{
+		b.clientFast = &fasthttp.Client{
 			ReadTimeout: timeout,
 			TLSConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -272,7 +315,7 @@ func (b *Work) runWorkers() {
 			MaxConnsPerHost: b.C,
 		}
 		if b.ProxyAddr != nil {
-			clientFast.Dial = fasthttpproxy.FasthttpSocksDialer(b.ProxyAddr.EscapedPath())
+			b.clientFast.Dial = fasthttpproxy.FasthttpSocksDialer(b.ProxyAddr.EscapedPath())
 		}
 	} else {
 		tr := &http.Transport{
@@ -290,17 +333,8 @@ func (b *Work) runWorkers() {
 		} else {
 			tr.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 		}
-		client = &http.Client{Transport: tr, Timeout: timeout}
+		b.client = &http.Client{Transport: tr, Timeout: timeout}
 	}
-
-	// Ignore the case where b.N % b.C != 0.
-	for i := 0; i < b.C; i++ {
-		go func() {
-			b.runWorker(client, clientFast, b.N/b.C)
-			wg.Done()
-		}()
-	}
-	wg.Wait()
 }
 
 // cloneRequest returns a clone of the provided *http.Request.

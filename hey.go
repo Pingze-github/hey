@@ -280,6 +280,46 @@ func main() {
 	w.Run()
 }
 
+// ForTestGetWorker returns the worker to run
+func ForTestGetWorker(url string, fast bool) *requester.Work {
+	method := "GET"
+	contentType := "text/html"
+	num := 1
+	conc := 10240
+
+	// Define net/http.Request
+	header := make(http.Header)
+	header.Set("Content-Type", contentType)
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		usageAndExit(err.Error())
+	}
+	req.Header = header
+
+	// Define fasthttp.Request
+	reqFast := &fasthttp.Request{}
+	reqFast.SetRequestURI(url)
+	reqFast.Header.SetMethod(method)
+
+	w := &requester.Work{
+		Request:            req,
+		RequestFast:        reqFast,
+		RequestBody:        nil,
+		N:                  num,
+		C:                  conc,
+		QPS:                0,
+		Timeout:            20,
+		DisableCompression: false,
+		DisableKeepAlives:  false,
+		DisableRedirects:   false,
+		Fast:               fast,
+		H2:                 false,
+		ProxyAddr:          nil,
+		Output:             "",
+	}
+	return w
+}
+
 func errAndExit(msg string) {
 	fmt.Fprintf(os.Stderr, msg)
 	fmt.Fprintf(os.Stderr, "\n")
